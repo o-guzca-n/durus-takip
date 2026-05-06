@@ -1,0 +1,184 @@
+from flask import Flask, request, jsonify, render_template_string
+from datetime import datetime
+import os
+
+app = Flask(__name__)
+
+HTML = """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Duruş Takip</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;background:#1a1a2e;color:#eee;padding:1.2rem;min-height:100vh}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.2rem;flex-wrap:wrap;gap:8px}
+.header h1{font-size:18px;font-weight:700;color:#fff}
+.badge{font-size:12px;padding:4px 12px;border-radius:8px}
+.badge.red{background:#3a0f0f;color:#ff6b6b;border:1px solid #ff6b6b}
+.badge.green{background:#0f3a1a;color:#51cf66;border:1px solid #51cf66}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.2rem}
+.card{background:#16213e;border-radius:10px;padding:.875rem;border:1px solid #2a2a4a}
+.card .lbl{font-size:11px;color:#888;margin-bottom:4px}
+.card .val{font-size:22px;font-weight:700;color:#fff}
+.card .val.red{color:#ff6b6b}
+.card .val.amber{color:#f0a500}
+.sec{background:#16213e;border:1px solid #2a2a4a;border-radius:12px;padding:1rem;margin-bottom:1rem}
+.sec h2{font-size:14px;font-weight:700;color:#f0a500;margin-bottom:.875rem}
+.live-box{display:flex;align-items:center;gap:10px;padding:.75rem;border-radius:8px;border:1px solid #2a2a4a;background:#0f1628;margin-bottom:8px}
+.dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.dot.red{background:#ff6b6b;animation:pulse 1.5s infinite}
+.dot.green{background:#51cf66}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.live-name{font-size:14px;font-weight:700;color:#fff}
+.live-sub{font-size:11px;color:#888;margin-top:2px}
+.live-time{margin-left:auto;font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
+.live-time.red{color:#ff6b6b}
+.live-time.green{color:#51cf66;font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{padding:7px 8px;color:#888;border-bottom:1px solid #2a2a4a;font-weight:400;text-align:left}
+td{padding:7px 8px;border-bottom:1px solid #1a1a2e;color:#ddd}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#0f1628}
+.pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px}
+.pill.red{background:#3a0f0f;color:#ff6b6b;border:1px solid #ff6b6b}
+.pill.green{background:#0f3a1a;color:#51cf66;border:1px solid #51cf66}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>⚠️ Duruş Takip Sistemi</h1>
+  <span id="badge" class="badge green">Yükleniyor</span>
+</div>
+<div class="cards">
+  <div class="card"><div class="lbl">Toplam Duruş</div><div class="val" id="cToplam">—</div></div>
+  <div class="card"><div class="lbl">Toplam Süre</div><div class="val amber" id="cToplamSure">—</div></div>
+  <div class="card"><div class="lbl">Ort. Süre</div><div class="val" id="cOrt">—</div></div>
+  <div class="card"><div class="lbl">Aktif Duruş</div><div class="val red" id="cAktif">—</div></div>
+</div>
+<div class="sec">
+  <h2>🔴 Canlı Durum</h2>
+  <div id="liveDiv">Yükleniyor...</div>
+</div>
+<div class="sec">
+  <h2>📋 Geçmiş Kayıtlar</h2>
+  <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Tarih</th><th>Saat</th><th>İstasyon</th><th>Süre</th><th>Durum</th></tr></thead>
+      <tbody id="tabloBody"></tbody>
+    </table>
+  </div>
+</div>
+<script>
+function fmt(sn){return Math.floor(sn/60)+" dk "+(sn%60)+" sn"}
+async function veriCek(){
+  try{
+    const res=await fetch("/api");
+    const data=await res.json();
+    const aktifSayisi=data.istasyonlar.filter(i=>i.aktif).length;
+    const badge=document.getElementById("badge");
+    badge.textContent=aktifSayisi>0?aktifSayisi+" Aktif Duruş":"Tümü Çalışıyor";
+    badge.className=aktifSayisi>0?"badge red":"badge green";
+    let toplamSn=0,toplamDurus=0;
+    data.istasyonlar.forEach(i=>{toplamSn+=i.toplam_sn;toplamDurus+=i.kayit_sayisi;});
+    const ort=toplamDurus>0?Math.round(toplamSn/toplamDurus):0;
+    document.getElementById("cToplam").textContent=toplamDurus;
+    document.getElementById("cToplamSure").textContent=fmt(toplamSn);
+    document.getElementById("cOrt").textContent=fmt(ort);
+    document.getElementById("cAktif").textContent=aktifSayisi;
+    let liveHTML="";
+    data.istasyonlar.forEach(ist=>{
+      const aktif=ist.aktif;
+      liveHTML+=`<div class="live-box">
+        <div class="dot ${aktif?'red':'green'}"></div>
+        <div><div class="live-name">${ist.isim}</div>
+        <div class="live-sub">${aktif?'Duruş devam ediyor':'Son duruş: '+fmt(ist.son_sure_sn)}</div></div>
+        <div class="live-time ${aktif?'red':'green'}">${aktif?fmt(ist.aktif_sure_sn):'Çalışıyor'}</div>
+      </div>`;
+    });
+    document.getElementById("liveDiv").innerHTML=liveHTML||"<div style='color:#888'>Henüz veri yok</div>";
+    let tabloHTML="";
+    data.kayitlar.forEach(k=>{
+      tabloHTML+=`<tr><td>${k.tarih}</td><td>${k.saat}</td><td>${k.istasyon}</td>
+        <td>${fmt(k.sure_sn)}</td>
+        <td><span class="pill ${k.aktif?'red':'green'}">${k.aktif?'Aktif':'Tamamlandı'}</span></td></tr>`;
+    });
+    document.getElementById("tabloBody").innerHTML=tabloHTML||
+      "<tr><td colspan='5' style='text-align:center;color:#888;padding:1rem'>Henüz kayıt yok</td></tr>";
+  }catch(e){console.error(e)}
+}
+veriCek();
+setInterval(veriCek,5000);
+</script>
+</body>
+</html>
+"""
+
+# RAM'de tutulan veri yapısı
+istasyonlar = {}
+
+@app.route("/")
+def index():
+    return render_template_string(HTML)
+
+@app.route("/veri", methods=["POST"])
+def veri_al():
+    data = request.get_json(force=True)
+    if not data:
+        return jsonify({"status": "error", "msg": "JSON bekleniyor"}), 400
+
+    isim = data.get("isim", "Bilinmiyor")
+
+    if isim not in istasyonlar:
+        istasyonlar[isim] = {
+            "isim": isim,
+            "aktif": False,
+            "aktif_sure_sn": 0,
+            "son_sure_sn": 0,
+            "kayit_sayisi": 0,
+            "toplam_sn": 0,
+            "kayitlar": []
+        }
+
+    ist = istasyonlar[isim]
+    ist["aktif"]         = data.get("aktif", False)
+    ist["aktif_sure_sn"] = data.get("sure_sn", 0)
+
+    # Duruş bitti → kayıt ekle
+    if not ist["aktif"] and data.get("sure_sn", 0) > 0:
+        sure_sn = data["sure_sn"]
+        ist["son_sure_sn"]  = sure_sn
+        ist["kayit_sayisi"] += 1
+        ist["toplam_sn"]    += sure_sn
+        ist["kayitlar"].insert(0, {
+            "tarih"   : datetime.now().strftime("%d.%m.%Y"),
+            "saat"    : datetime.now().strftime("%H:%M:%S"),
+            "istasyon": isim,
+            "sure_sn" : sure_sn,
+            "aktif"   : False
+        })
+        if len(ist["kayitlar"]) > 100:
+            ist["kayitlar"].pop()
+
+    return jsonify({"status": "ok"})
+
+@app.route("/api")
+def api():
+    tum_kayitlar = []
+    for ist in istasyonlar.values():
+        tum_kayitlar.extend(ist["kayitlar"])
+    tum_kayitlar.sort(key=lambda x: x["tarih"] + x["saat"], reverse=True)
+    return jsonify({
+        "istasyonlar": list(istasyonlar.values()),
+        "kayitlar"   : tum_kayitlar[:50]
+    })
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
